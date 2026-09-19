@@ -1,5 +1,4 @@
 import ipaddress
-import os
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from simulador.rede import LeitorTopologia, interface_para
@@ -360,10 +359,7 @@ class InterfaceSimulador:
         if not self.motor.eventos:
             messagebox.showinfo("Salvar Registro", "Execute um cenário antes de salvar o registro.")
             return
-        pasta = os.path.join(LeitorTopologia.pasta_do_programa(), "registros")
-        if not os.path.isdir(pasta):
-            pasta = LeitorTopologia.pasta_do_programa()
-        caminho = filedialog.asksaveasfilename(initialdir=pasta, initialfile="registro.txt", defaultextension=".txt", filetypes=[("Text files", "*.txt")])
+        caminho = filedialog.asksaveasfilename(initialdir=LeitorTopologia.pasta_do_programa(), initialfile="registro.txt", defaultextension=".txt", filetypes=[("Text files", "*.txt")])
         if caminho:
             with open(caminho, 'w', encoding='utf-8') as f:
                 f.write("\n".join(self.motor.eventos) + "\n")

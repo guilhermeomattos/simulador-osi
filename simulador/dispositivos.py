@@ -1,3 +1,4 @@
+from simulador.camadas import CamadaFisica, CamadaEnlace, CamadaRede, CamadaTransporte, CamadaSessao, CamadaApresentacao, CamadaAplicacao
 
 class Dispositivo:
     def __init__(self, motor, nome, ip, mac):

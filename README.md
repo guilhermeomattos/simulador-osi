@@ -38,8 +38,9 @@ Os sete casos do enunciado (C1 a C7) podem ser escolhidos na interface, incluind
     |-- SimuladorOSI.exe        Programa pronto para executar (duplo clique)
     |-- topologia.json          Rede simulada: redes, endereços, interfaces, custos e posições no mapa
     |-- main.py                 Ponto de entrada do código-fonte
-    |-- README.md               Enunciado original do professor
-    |-- README_GRUPO.md         Este arquivo
+    |-- README.md               Este arquivo
+    |-- registros/              Registros de eventos dos sete casos
+    |   `-- registro_C1.txt a registro_C7.txt
     |-- simulador/              Código-fonte do simulador
     |   |-- pdu.py
     |   |-- camadas.py
