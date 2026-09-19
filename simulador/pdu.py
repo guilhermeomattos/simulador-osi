@@ -1,10 +1,20 @@
+import zlib
+
 class PDU:
     def __init__(self, conteudo, tamanho_cabecalho=0):
         self.conteudo = conteudo
-        self.tamanho = (conteudo.tamanho if isinstance(conteudo, PDU) else len(str(conteudo))) + tamanho_cabecalho
+        if isinstance(conteudo, PDU):
+            tamanho = conteudo.tamanho
+        elif isinstance(conteudo, bytes):
+            tamanho = len(conteudo)
+        else:
+            tamanho = len(str(conteudo).encode("utf-8"))
+        self.tamanho = tamanho + tamanho_cabecalho
 
 class Mensagem(PDU):
-    def __init__(self, texto): super().__init__(texto, 4)
+    def __init__(self, dados, sessao):
+        super().__init__(f"{sessao:04d}".encode() + dados)
+        self.sessao = sessao
 
 class Segmento(PDU):
     def __init__(self, mensagem, p_origem, p_destino, seq=1, total=1):
@@ -26,4 +36,8 @@ class Quadro(PDU):
         self.mac_origem = mac_origem
         self.mac_destino = mac_destino
         self.id_quadro = id_quadro
-        self.verificacao_erro = True
+        self.fcs = zlib.crc32(self.para_bytes())
+        self.bits = ""
+
+    def para_bytes(self):
+        return f"{self.mac_destino}{self.mac_origem}Q{self.id_quadro}{self.tamanho}".encode()
