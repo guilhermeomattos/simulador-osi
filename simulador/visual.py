@@ -1,5 +1,8 @@
+import ipaddress
+import os
 import tkinter as tk
-from tkinter import ttk, filedialog
+from tkinter import ttk, filedialog, messagebox
+from simulador.rede import LeitorTopologia, interface_para
 
 class InterfaceSimulador:
     def __init__(self, motor):
@@ -7,18 +10,34 @@ class InterfaceSimulador:
         self.root = tk.Tk()
         self.root.title("Simulador OSI - Comunicação de Dados")
         self.root.state('zoomed')
-        
+        self.root.report_callback_exception = self.mostrar_erro
+
         self.evento_atual = 0
         self.rodando = False
         self.modo_tcp = False
         self.velocidade_ms = 1000
-        
+
         self.dispositivo_recente = "H1"
         self.camada_recente = 7
-        
+        self.acao_recente = ""
+        self.envolvidos = ["H1"]
+        self.enlaces_percorridos = []
+        self.ativo_mapa = None
+
         self.construir()
+        self.mostrar_comparacao()
         self.desenhar_mapa(None)
         self.atualizar_pilha("H1", 7)
+
+    def mostrar_erro(self, tipo, valor, rastro):
+        self.rodando = False
+        messagebox.showerror("Erro", f"Ocorreu um erro, mas o programa continua aberto:\n\n{valor}")
+
+    def mostrar_comparacao(self):
+        c1 = self.motor.simular_cenario("C1")
+        c2 = self.motor.simular_cenario("C2")
+        self.motor.eventos.clear()
+        self.lbl_comparacao.config(text=f"Custo do empilhamento: C1 (1 enlace) η = {c1:.1f}%   x   C2 (4 enlaces) η = {c2:.1f}%")
 
     def construir(self):
         frame_ctrl = tk.Frame(self.root, pady=5)
@@ -46,7 +65,7 @@ class InterfaceSimulador:
         tk.Button(frame_ctrl, text="Contínuo", command=self.continuo).pack(side=tk.LEFT, padx=5)
         tk.Button(frame_ctrl, text="Pausar", command=self.pausar).pack(side=tk.LEFT, padx=5)
         tk.Button(frame_ctrl, text="Alternar Pilha OSI/TCP", command=self.alternar).pack(side=tk.LEFT, padx=15)
-        tk.Button(frame_ctrl, text="Salvar Registo", command=self.salvar_log, bg="lightgreen").pack(side=tk.RIGHT, padx=10)
+        tk.Button(frame_ctrl, text="Salvar Registro", command=self.salvar_log, bg="lightgreen").pack(side=tk.RIGHT, padx=10)
 
         frame_manual = tk.Frame(self.root, pady=5)
         frame_manual.pack(fill=tk.X, padx=10)
@@ -59,8 +78,8 @@ class InterfaceSimulador:
         self.combo_origem.current(0)
         self.combo_origem.pack(side=tk.LEFT, padx=2)
         
-        tk.Label(frame_manual, text="Destino:").pack(side=tk.LEFT, padx=2)
-        self.combo_destino = ttk.Combobox(frame_manual, state="readonly", width=5)
+        tk.Label(frame_manual, text="Destino (nome ou IP):").pack(side=tk.LEFT, padx=2)
+        self.combo_destino = ttk.Combobox(frame_manual, width=10)
         self.combo_destino['values'] = ["H1", "H2", "H3", "H4", "H5"]
         self.combo_destino.current(3)
         self.combo_destino.pack(side=tk.LEFT, padx=2)
@@ -80,6 +99,8 @@ class InterfaceSimulador:
         
         self.canvas_pilha = tk.Canvas(frame_meio, bg="#f9f9f9", width=300)
         self.canvas_pilha.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5)
+        self.canvas_mapa.bind("<Configure>", lambda e: self.desenhar_mapa(self.ativo_mapa))
+        self.canvas_pilha.bind("<Configure>", lambda e: self.atualizar_pilha(None, None))
         
         frame_base = tk.Frame(self.root)
         frame_base.pack(fill=tk.BOTH, expand=True)
@@ -87,27 +108,72 @@ class InterfaceSimulador:
         frame_info = tk.Frame(frame_base)
         frame_info.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10)
         
-        self.lbl_logico = tk.Label(frame_info, text="Endereços Lógicos (Origem -> Destino): --", fg="blue", font=("Arial", 11, "bold"))
+        self.lbl_logico = tk.Label(frame_info, text="Endereços Lógicos (fixos da origem ao destino): --", fg="blue", font=("Arial", 11, "bold"))
         self.lbl_logico.pack(anchor="w", pady=5)
-        self.lbl_fisico = tk.Label(frame_info, text="Endereços Físicos (Salto Atual): --", fg="green", font=("Arial", 11, "bold"))
+        self.lbl_fisico = tk.Label(frame_info, text="Endereços Físicos (mudam a cada salto): --", fg="green", font=("Arial", 11, "bold"))
         self.lbl_fisico.pack(anchor="w", pady=5)
+        self.lbl_saltos = tk.Label(frame_info, text="", fg="green", font=("Arial", 9), justify=tk.LEFT)
+        self.lbl_saltos.pack(anchor="w")
         
         tk.Label(frame_info, text="Unidade de Dados Corrente (V3):", font=("Arial", 9, "italic")).pack(anchor="w", pady=(10, 0))
         self.canvas_pdu = tk.Canvas(frame_info, height=80, bg="#eaeaea")
         self.canvas_pdu.pack(fill=tk.X, pady=5)
-        
+
+        self.lbl_resultado = tk.Label(frame_info, text="", font=("Arial", 10, "bold"))
+        self.lbl_resultado.pack(anchor="w")
+        self.lbl_comparacao = tk.Label(frame_info, text="", fg="darkred", font=("Arial", 10, "bold"))
+        self.lbl_comparacao.pack(anchor="w")
+
         self.log = tk.Text(frame_base, height=12, width=65)
         self.log.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5, pady=5)
 
     def desenhar_mapa(self, dispositivo_ativo):
+        self.ativo_mapa = dispositivo_ativo
         self.canvas_mapa.delete("all")
-        nodes = {"H1": (50, 50), "H2": (50, 150), "R1": (150, 100), "R4": (250, 50), 
-                 "R2": (250, 150), "R3": (350, 100), "H4": (450, 50), "H5": (450, 150), "H3": (250, 250)}
-        links = [("H1","R1"), ("H2","R1"), ("R1","R4"), ("R1","R2"), ("R4","R3"), ("R2","R3"), ("R2","H3"), ("R3","H4"), ("R3","H5")]
-        
-        for o, d in links:
-            self.canvas_mapa.create_line(nodes[o][0], nodes[o][1], nodes[d][0], nodes[d][1], fill="gray", width=2)
-            
+        topo = self.motor.topologia
+        todos = list(topo["computadores"].items()) + list(topo["roteadores"].items())
+        largura = self.canvas_mapa.winfo_width()
+        altura = self.canvas_mapa.winfo_height()
+        max_x = max(d["posicao"][0] for _, d in todos) + 100
+        max_y = max(d["posicao"][1] for _, d in todos) + 100
+        escala = min(largura / max_x, altura / max_y, 1.5) if largura > 50 else 1
+        nodes = {}
+        for nome, d in todos:
+            nodes[nome] = ((d["posicao"][0] + 40) * escala, (d["posicao"][1] + 40) * escala)
+
+        links = []
+        for nome, d in topo["computadores"].items():
+            rede = self.motor.rede_do_ip(d["ip"])
+            for r_nome, r in topo["roteadores"].items():
+                for nome_if, i in r["interfaces"].items():
+                    if i.get("rede") == rede:
+                        links.append((nome, r_nome, "", None, nome_if))
+        for e in topo["enlaces"]:
+            if_de = interface_para(topo["roteadores"][e["de"]], e["para"])
+            if_para = interface_para(topo["roteadores"][e["para"]], e["de"])
+            links.append((e["de"], e["para"], f"custo {e['custo']}", if_de, if_para))
+
+        for o, d, texto, if_o, if_d in links:
+            (x1, y1), (x2, y2) = nodes[o], nodes[d]
+            percorrido = f"{o}-{d}" in self.enlaces_percorridos or f"{d}-{o}" in self.enlaces_percorridos
+            caido = f"{o}-{d}" in self.motor.enlaces_caidos or f"{d}-{o}" in self.motor.enlaces_caidos
+            if caido:
+                self.canvas_mapa.create_line(x1, y1, x2, y2, fill="red", width=2, dash=(5, 3))
+                self.canvas_mapa.create_text((x1+x2)/2, (y1+y2)/2 + 12, text="CAIU", fill="red", font=("Arial", 8, "bold"))
+            else:
+                self.canvas_mapa.create_line(x1, y1, x2, y2, fill="red" if percorrido else "gray", width=4 if percorrido else 2)
+            if texto:
+                self.canvas_mapa.create_text((x1+x2)/2, (y1+y2)/2 - 10, text=texto, font=("Arial", 8))
+            for nome_if, (xa, ya), (xb, yb) in ((if_o, (x1, y1), (x2, y2)), (if_d, (x2, y2), (x1, y1))):
+                if nome_if:
+                    self.canvas_mapa.create_text(xa + (xb-xa)*0.25, ya + (yb-ya)*0.25 - 8, text=nome_if, fill="darkred", font=("Arial", 8))
+
+        for rede, nome_rede in topo["redes"].items():
+            hosts = [n for n, d in topo["computadores"].items() if self.motor.rede_do_ip(d["ip"]) == rede]
+            if hosts:
+                x, y = nodes[hosts[-1]]
+                self.canvas_mapa.create_text(x, y + 30, text=f"{nome_rede} {rede}", fill="darkgreen", font=("Arial", 9, "bold"))
+
         for n, (x, y) in nodes.items():
             if n == dispositivo_ativo:
                 cor = "yellow"
@@ -129,35 +195,48 @@ class InterfaceSimulador:
 
         self.canvas_pilha.delete("all")
         if not dispositivo: return
-        
-        modelo_str = "TCP/IP" if self.modo_tcp and "H" in dispositivo else "OSI"
-        titulo_texto = f"Pilha: {dispositivo} [{modelo_str}]" if "H" in dispositivo else f"Pilha: {dispositivo}"
-        self.canvas_pilha.create_text(150, 20, text=titulo_texto, font=("Arial", 11, "bold"))
-        
-        camadas = ["3 Rede", "2 Enlace", "1 Física"] if "R" in dispositivo else (
-            ["Aplicação (L5-L7)", "4 Transporte", "3 Rede", "2 Enlace", "1 Física"] if self.modo_tcp else 
-            ["7 Aplicação", "6 Apresentação", "5 Sessão", "4 Transporte", "3 Rede", "2 Enlace", "1 Física"])
-        
-        y = 50 if "H" in dispositivo else 150
-        for c in camadas:
-            num = int(c.split()[0]) if c.split()[0].isdigit() else 7
-            destacada = False
-            if camada is not None:
-                if num == camada or (self.modo_tcp and num == 7 and camada in [5, 6, 7]):
-                    destacada = True
-            cor = "yellow" if destacada else "#e6e6fa"
-            
-            self.canvas_pilha.create_rectangle(50, y, 250, y+30, fill=cor)
-            self.canvas_pilha.create_text(150, y+15, text=c)
-            y += 35
+
+        largura = max(self.canvas_pilha.winfo_width(), 300)
+        altura = max(self.canvas_pilha.winfo_height(), 200)
+        coluna = largura / len(self.envolvidos)
+        w = min(coluna - 6, 120)
+        passo_y = min(35, (altura - 40) / 7)
+        fonte = ("Arial", 9) if w >= 100 else ("Arial", 7)
+
+        for indice, nome in enumerate(self.envolvidos):
+            centro = coluna * indice + coluna / 2
+            modelo_str = "TCP/IP" if self.modo_tcp and "H" in nome else "OSI"
+            titulo_texto = f"{nome} [{modelo_str}]" if "H" in nome else nome
+
+            camadas = ["3 Rede", "2 Enlace", "1 Física"] if "R" in nome else (
+                ["Aplicação (L5-L7)", "4 Transporte", "3 Rede", "2 Enlace", "1 Física"] if self.modo_tcp else
+                ["7 Aplicação", "6 Apresentação", "5 Sessão", "4 Transporte", "3 Rede", "2 Enlace", "1 Física"])
+
+            y = 35 + (7 - len(camadas)) * passo_y
+            self.canvas_pilha.create_text(centro, y - 12, text=titulo_texto, font=("Arial", 9, "bold"))
+            for c in camadas:
+                num = int(c.split()[0]) if c.split()[0].isdigit() else 7
+                destacada = False
+                if nome == dispositivo and camada is not None:
+                    if num == camada or (self.modo_tcp and num == 7 and camada in [5, 6, 7]):
+                        destacada = True
+                cor = "yellow" if destacada else "#e6e6fa"
+                if destacada and "R" in nome and self.acao_recente in ("ROTEIA", "DESCARTA") and num == 3:
+                    cor = "orange"
+
+                self.canvas_pilha.create_rectangle(centro - w/2, y, centro + w/2, y + passo_y - 5, fill=cor, width=3 if destacada else 1)
+                self.canvas_pilha.create_text(centro, y + (passo_y - 5)/2, text=c, font=fonte)
+                y += passo_y
 
     def desenhar_pdu(self, camada_atual):
         self.canvas_pdu.delete("all")
         if not camada_atual: return
         
-        x, y, w, h = 10, 20, 60, 40
-        cores = {2: "#ffd700", 3: "#87ceeb", 4: "#98fb98", "Dados": "#d3d3d3"}
-        
+        x, y, w, h = 10, 30, 60, 40
+        cores = {2: "#ffd700", 3: "#87ceeb", 4: "#98fb98", 5: "#ffb6c1", "Dados": "#d3d3d3"}
+        nomes = {7: "Mensagem", 6: "Mensagem", 5: "Mensagem", 4: "Segmento", 3: "Pacote", 2: "Quadro", 1: "Bits (quadro transmitido)"}
+        self.canvas_pdu.create_text(10, 15, text=f"Unidade: {nomes[camada_atual]}", anchor="w", font=("Arial", 10, "bold"))
+
         if camada_atual <= 2:
             self.canvas_pdu.create_rectangle(x, y, x+w, y+h, fill=cores[2])
             self.canvas_pdu.create_text(x+w/2, y+h/2, text="L2 Hdr")
@@ -170,7 +249,11 @@ class InterfaceSimulador:
             self.canvas_pdu.create_rectangle(x, y, x+w, y+h, fill=cores[4])
             self.canvas_pdu.create_text(x+w/2, y+h/2, text="L4 Hdr")
             x += w
-            
+        if camada_atual <= 5:
+            self.canvas_pdu.create_rectangle(x, y, x+w, y+h, fill=cores[5])
+            self.canvas_pdu.create_text(x+w/2, y+h/2, text="L5 Hdr")
+            x += w
+
         self.canvas_pdu.create_rectangle(x, y, x+w*2, y+h, fill=cores["Dados"])
         self.canvas_pdu.create_text(x+w, y+h/2, text="Dados (Payload)")
         x += w*2
@@ -186,29 +269,44 @@ class InterfaceSimulador:
         self.iniciar_ciclo_animacao()
 
     def simular_manual(self):
-        self.log.delete(1.0, tk.END)
-        self.motor.eventos.clear()
-        self.motor.passo = 1
-        self.motor.octetos_transmitidos = 0
-        self.motor.octetos_dados = 0
-        self.motor.flag_erro_c6 = False
-        self.motor.carregar_dados()
-        
         origem_nome = self.combo_origem.get()
-        destino_nome = self.combo_destino.get()
+        destino = self.combo_destino.get().strip()
         texto = self.entry_msg.get()
-        
-        ip_destino = self.motor.dispositivos[destino_nome].ip
-        self.motor.iniciar_transmissao(origem_nome, ip_destino, 5000, 80, texto)
-        
-        eficiencia = (self.motor.octetos_dados / self.motor.octetos_transmitidos) * 100 if self.motor.octetos_transmitidos > 0 else 0
-        self.motor.eventos.append(f"--- | SISTEMA | -- | RESULTADO | Úteis: {self.motor.octetos_dados}B, Total: {self.motor.octetos_transmitidos}B, Eficiência: {eficiencia:.1f}% | --")
-        
+
+        if destino in self.motor.topologia["computadores"]:
+            ip_destino = self.motor.topologia["computadores"][destino]["ip"]
+        else:
+            try:
+                ip_destino = str(ipaddress.IPv4Address(destino))
+            except ValueError:
+                messagebox.showerror("Destino inválido", f"'{destino}' não é um computador (H1 a H5) nem um endereço IP válido.")
+                return
+        if ip_destino == self.motor.topologia["computadores"][origem_nome]["ip"]:
+            messagebox.showerror("Destino inválido", "O destino não pode ser o próprio computador de origem.")
+            return
+        if not texto:
+            messagebox.showerror("Mensagem vazia", "Digite uma mensagem para enviar.")
+            return
+
+        self.log.delete(1.0, tk.END)
+        self.motor.reiniciar()
+        self.motor.iniciar_transmissao(origem_nome, ip_destino, 5210, 443, texto)
+        self.motor.finalizar()
         self.iniciar_ciclo_animacao()
 
     def iniciar_ciclo_animacao(self):
         self.evento_atual = 0
         self.rodando = False
+        self.enlaces_percorridos = []
+        self.lbl_saltos.config(text="")
+        self.lbl_resultado.config(text="")
+        self.lbl_logico.config(text="Endereços Lógicos (fixos da origem ao destino): --")
+        self.lbl_fisico.config(text="Endereços Físicos (mudam a cada salto): --")
+        self.envolvidos = []
+        for evt in self.motor.eventos:
+            nome = evt.split('|')[1].strip()
+            if nome != "SISTEMA" and nome not in self.envolvidos:
+                self.envolvidos.append(nome)
         self.passo()
 
     def alternar(self):
@@ -237,13 +335,20 @@ class InterfaceSimulador:
             
             if "SISTEMA" not in evt:
                 partes = [p.strip() for p in evt.split('|')]
-                disp, cam, acao, desc = partes[1], int(partes[2].replace('L','')), partes[3], partes[4]
+                disp, cam, acao = partes[1], int(partes[2].replace('L','')), partes[3]
+                desc = partes[4].rsplit(' ', 2)[0].strip()
+                self.acao_recente = acao
+                if acao == "TRANSMITE": self.enlaces_percorridos.append(desc.split("enlace ")[1])
                 self.atualizar_pilha(disp, cam)
                 self.desenhar_pdu(cam)
                 self.desenhar_mapa(disp)
-                
-                if acao == "ENCAPSULA": self.lbl_logico.config(text=f"Endereços Lógicos (Origem -> Destino): {desc}")
-                if acao == "ENQUADRA": self.lbl_fisico.config(text=f"Endereços Físicos (Salto Atual): {desc.split(',')[0]}")
+
+                if acao == "ENCAPSULA": self.lbl_logico.config(text=f"Endereços Lógicos (fixos da origem ao destino): {desc}")
+                if acao == "ENQUADRA":
+                    self.lbl_fisico.config(text=f"Endereços Físicos (mudam a cada salto): {desc}")
+                    self.lbl_saltos.config(text=self.lbl_saltos.cget("text") + f"{desc.split(', ')[1]}: {desc.split(',')[0]}\n")
+            elif "RESULTADO" in evt:
+                self.lbl_resultado.config(text=evt.split("RESULTADO | ")[1])
 
             self.evento_atual += 1
             if self.rodando: self.root.after(self.velocidade_ms, self.executar)
@@ -252,7 +357,13 @@ class InterfaceSimulador:
             self.desenhar_mapa(None)
 
     def salvar_log(self):
-        caminho = filedialog.asksaveasfilename(defaultextension=".txt", filetypes=[("Text files", "*.txt")])
+        if not self.motor.eventos:
+            messagebox.showinfo("Salvar Registro", "Execute um cenário antes de salvar o registro.")
+            return
+        pasta = os.path.join(LeitorTopologia.pasta_do_programa(), "registros")
+        if not os.path.isdir(pasta):
+            pasta = LeitorTopologia.pasta_do_programa()
+        caminho = filedialog.asksaveasfilename(initialdir=pasta, initialfile="registro.txt", defaultextension=".txt", filetypes=[("Text files", "*.txt")])
         if caminho:
             with open(caminho, 'w', encoding='utf-8') as f:
-                f.write(self.log.get(1.0, tk.END))
+                f.write("\n".join(self.motor.eventos) + "\n")
